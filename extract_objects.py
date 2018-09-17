@@ -7,6 +7,11 @@ import h5py
 
 
 max_point_num = 2048
+min_point_num = 100
+max_obj_num = 2048
+
+batch_data = []
+batch_label = []
 
 
 def do_voxel_grid_filter(point_cloud, LEAF_SIZE = 0.01):
@@ -16,17 +21,23 @@ def do_voxel_grid_filter(point_cloud, LEAF_SIZE = 0.01):
 
 
 def resize_object(point_array):
-    """Filter the point cloud to fit in h5 size"""
-    point_array = np.float32(point_array)
-    pc = pcl.PointCloud(point_array)
-    leaf = 0.01
-    filtered = do_voxel_grid_filter(pc, leaf)
-    while(filtered.size > max_point_num):
-        leaf = leaf + 0.01
-        filtered = do_voxel_grid_filter(filtered, leaf)
-    filtered_array = np.asarray(filtered)
-    zeros_array = np.zeros((max_point_num - filtered_array.shape[0], 3))
-    out_array = np.concatenate([filtered_array, zeros_array], axis = 0)
+    if point_array.shape[0] > max_point_num:
+        """Filter the point cloud to fit in h5 size"""
+        point_array = np.float32(point_array)
+        pc = pcl.PointCloud(point_array)
+        leaf = 0.01
+        filtered = do_voxel_grid_filter(pc, leaf)
+        while(filtered.size > max_point_num):
+            leaf = leaf + 0.01
+            filtered = do_voxel_grid_filter(filtered, leaf)
+        filtered_array = np.asarray(filtered)
+        zeros_array = np.zeros((max_point_num - filtered_array.shape[0], 3))
+        out_array = np.concatenate([filtered_array, zeros_array], axis = 0)
+
+    else:
+        zeros_array = np.zeros((max_point_num - point_array.shape[0], 3))
+        out_array = np.concatenate([point_array, zeros_array], axis = 0)
+    
     return out_array
 
 
@@ -34,6 +45,7 @@ def prepare_h5_inputs(data_list, label_list):
     assert len(data_list) == len(label_list)
     N = len(label_list)
     # print(N)
+    
     data_dim = [max_point_num, 3]
     label_dim = [1]
     batch_data_dim = [N] + data_dim
@@ -44,10 +56,7 @@ def prepare_h5_inputs(data_list, label_list):
     # print(h5_batch_label.shape)
 
     for k in range(N):
-        d_tmp = np.append(data_list[k], np.array([0] * (max_point_num * 3 - data_list[k].size))).reshape(-1, 3)
-        if d_tmp.shape[0] > max_point_num:
-            d_tmp = resize_object(d_tmp)
-        
+        d_tmp = data_list[k]
         l_tmp = label_list[k]
 
         h5_batch_data[k, ...] = d_tmp
@@ -131,8 +140,6 @@ def get_label_and_data(label_path, bin_path):
                   "Misc": 7}
 
     bounding_box = []
-    batch_data = []
-    batch_label = []
 
     with open(label_path, "r") as f:
         labels = f.read().split("\n")
@@ -155,21 +162,24 @@ def get_label_and_data(label_path, bin_path):
                 x0, x1, y0, y1, z0, z1 = calc_bbox(places, size, rotates)
                 pc = extract_pc_from_bin(bin_path, x0, x1, y0, y1, z0, z1)
 
-                if pc.shape[0] > 100:
+                if pc.shape[0] > min_point_num:
+                    pc = resize_object(pc)
                     batch_data.append(pc)
                     batch_label.append(np.array([label_dict[label[0]]]))
 
-    return batch_data, batch_label
 
-
-def object_extractor(h5_filename, label_path, bin_path):
-    data, label = get_label_and_data(label_path, bin_path)
-    if (len(data) > 0 and len(label) > 0):
-        h5_data, h5_label = prepare_h5_inputs(data, label)
+def seg_list_and_write_h5(h5_path):
+    data_sum = len(batch_data)
+    label_sum = len(batch_label)
+    assert(data_sum == label_sum)
+    file_num = data_sum // max_obj_num
+    for idx in range(0, file_num + 1):
+        data_slice = batch_data[(idx * max_obj_num):min(((idx + 1) * max_obj_num), data_sum)]
+        label_slice = batch_label[(idx * max_obj_num):min(((idx + 1) * max_obj_num), label_sum)]
+        h5_filename = os.path.join(h5_path, 'train_' + str(idx) + '.h5')
+        h5_data, h5_label = prepare_h5_inputs(data_slice, label_slice)
         save_h5(h5_filename, h5_data, h5_label)
-        return True
-    else:
-        return False
+        print("Done writing file num ----------- " + str(idx))
 
 
 if __name__ == "__main__":
@@ -179,7 +189,7 @@ if __name__ == "__main__":
     LIST_PATH = os.path.join(DIR_PATH, 'dataname_list.txt')
     DATA_DIR = os.path.join(DIR_PATH, 'data_object_velodyne/training/velodyne/')
     LABEL_DIR = os.path.join(DIR_PATH, 'data_object_velodyne/training/label_2/')
-    RESULT_DIR = os.path.join(DIR_PATH, 'h5/')
+    RESULT_DIR = os.path.join(DIR_PATH, 'hdf5_2048/')
     if not os.path.exists(RESULT_DIR):
         os.makedirs(RESULT_DIR)
 
@@ -189,11 +199,12 @@ if __name__ == "__main__":
         for name in name_list:
             if not name:
                 continue
-            h5_filename = os.path.join(RESULT_DIR, 'train_' + name + '.h5')
+            print("Processing file ----------- " + name)
             label_path = os.path.join(LABEL_DIR, name + '.txt')
             bin_path = os.path.join(DATA_DIR, name + '.bin')
-            flag = object_extractor(h5_filename, label_path, bin_path)
-            if flag:
-                saved.append(h5_filename + '\n')
-                with open(os.path.join(DIR_PATH, 'h5_list.txt'), 'w') as fo:
-                    fo.writelines(saved)
+            get_label_and_data(label_path, bin_path)
+        
+        print(len(batch_label))
+        print(len(batch_data))
+
+        seg_list_and_write_h5(RESULT_DIR)
