@@ -6,15 +6,16 @@ import math
 import h5py
 
 
-max_point_num = 2048
-min_point_num = 100
-max_obj_num = 2048
+max_point_num = 1024  # maximum number of points in each cluster
+min_point_num = 50  # minimum number of points in each cluster, smaller clusters will be neglected
+max_obj_num = 2048  # max number of clusters stored in each h5 file
 
 batch_data = []
 batch_label = []
 
 
 def do_voxel_grid_filter(point_cloud, LEAF_SIZE = 0.01):
+    ''' Filter a large cluster to make it sparse'''
     voxel_filter = point_cloud.make_voxel_grid_filter()
     voxel_filter.set_leaf_size(LEAF_SIZE, LEAF_SIZE, LEAF_SIZE)
     return voxel_filter.filter()
@@ -32,6 +33,7 @@ def resize_object(point_array):
             filtered = do_voxel_grid_filter(filtered, leaf)
         filtered_array = np.asarray(filtered)
         zeros_array = np.zeros((max_point_num - filtered_array.shape[0], 3))
+        # Add zeros (0,0,0) at the end of the array
         out_array = np.concatenate([filtered_array, zeros_array], axis = 0)
 
     else:
@@ -42,6 +44,7 @@ def resize_object(point_array):
 
 
 def prepare_h5_inputs(data_list, label_list):
+    ''' Truncate the data and label to batches '''
     assert len(data_list) == len(label_list)
     N = len(label_list)
     # print(N)
@@ -65,6 +68,7 @@ def prepare_h5_inputs(data_list, label_list):
 
 
 def save_h5(h5_filename, data_array, label_array):
+    ''' Combine data and labels together and save to the h5 file '''
     data_dtype = 'float32'
     label_dtype = 'uint8'
     h5_fout = h5py.File(h5_filename, 'w')
@@ -84,23 +88,29 @@ def save_h5(h5_filename, data_array, label_array):
 def calc_bbox(places, size, rotates):
     """Calculate bounding box for each object"""
     a = math.cos(rotates)
+    # 'rotates' is the rotation angle around y-axis in camera coordinates
+    # aka z-axis in object coodinates
+    # range [-pi, pi]
     b = math.sin(rotates)
-    R = np.mat([[a, 0, b], [0, 1, 0], [-b, 0, a]])
+    R = np.mat([[a, 0, b], [0, 1, 0], [-b, 0, a]])  # rotation matrix
 
-    H = size[0]
-    W = size[1]
-    L = size[2]
+    H = size[0]  # height
+    W = size[1]  # width
+    L = size[2]  # length
     list_x = [L/2, L/2, -L/2, -L/2, L/2, L/2, -L/2, -L/2]
     list_y = [0, 0, 0, 0, -H, -H, -H, -H]
     list_z = [W/2, -W/2, -W/2, W/2, W/2, -W/2, -W/2, W/2]
     corners = R * np.mat([list_x, list_y, list_z])
+    # calculate the bounding box after rotation
 
-    lc_x = places[0]
-    lc_y = places[1]
-    lc_z = places[2]
+    lc_x = places[0]  # x coodinate of the center point
+    lc_y = places[1]  # y coodinate of the center point
+    lc_z = places[2]  # z coodinate of the center point
     corners[0, :] = corners[0, :] + lc_x
     corners[1, :] = corners[1, :] + lc_y
     corners[2, :] = corners[2, :] + lc_z
+    # calculate the bounding box after translation
+    # "corners" is a 3x8 matrix, stores 8 corners' location
 
     y_max = -corners[0].min()
     y_min = -corners[0].max()
@@ -108,13 +118,15 @@ def calc_bbox(places, size, rotates):
     z_min = -corners[1].max()
     x_min = corners[2].min()
     x_max = corners[2].max()
+    # Using the minimum and maximum value instead of the coordinates,
+    # just to simplify the calculation
 
     # print([x_min, x_max, y_min, y_max, z_min, z_max])
     return x_min, x_max, y_min, y_max, z_min, z_max
 
 
 def extract_pc_from_bin(bin_path, x_min, x_max, y_min, y_max, z_min, z_max):
-    """Load PointCloud data from bin file."""
+    """Load PointCloud data from bin file. Extract the objects by given their bounding box"""
     obj = np.fromfile(bin_path, dtype=np.float32).reshape(-1, 4)
     lines = obj.shape[0]
     points = []
@@ -169,6 +181,7 @@ def get_label_and_data(label_path, bin_path):
 
 
 def seg_list_and_write_h5(h5_path):
+    ''' Concate batched data to a certain length and write to h5 '''
     data_sum = len(batch_data)
     label_sum = len(batch_label)
     assert(data_sum == label_sum)
@@ -189,7 +202,7 @@ if __name__ == "__main__":
     LIST_PATH = os.path.join(DIR_PATH, 'dataname_list.txt')
     DATA_DIR = os.path.join(DIR_PATH, 'data_object_velodyne/training/velodyne/')
     LABEL_DIR = os.path.join(DIR_PATH, 'data_object_velodyne/training/label_2/')
-    RESULT_DIR = os.path.join(DIR_PATH, 'hdf5_2048/')
+    RESULT_DIR = os.path.join(DIR_PATH, 'hdf5_1024/')
     if not os.path.exists(RESULT_DIR):
         os.makedirs(RESULT_DIR)
 
